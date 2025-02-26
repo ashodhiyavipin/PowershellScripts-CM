@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-    Installs a single Microsoft Update Standalone Package (CAB) on an online Windows PC.
+    Installs a single Microsoft Update Standalone Package (MSU) on an online Windows PC.
 
 .DESCRIPTION
-    This script automates the installation of a specified CAB file using the Deployment Image Servicing and Management (DISM) tool.
+    This script automates the installation of a specified MSU file using the Deployment Image Servicing and Management (DISM) tool.
     It logs all activities, including any errors encountered during the installation process, to a log file for troubleshooting purposes.
 
 .NOTES
-    ApplyStandaloneCAB.ps1 - A.Fletcher - 25/10/2024
+    ApplyStandaloneMSU.ps1 - A.Fletcher - 29/08/2024
     Script History:
     Version 1.0 - Script inception
 #>
@@ -15,7 +15,7 @@
 
 # Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
-$logFileName = "$logFilePath\ApplyStandaloneCAB.log"
+$logFileName = "$logFilePath\ApplyStandaloneMSU.log"
 
 # Function to write logs
 function Write-Log {
@@ -35,21 +35,21 @@ function Write-Log {
     Add-Content -Path $logFileName -Value $logMessage
 }
 
-# SCCM package's directory is our current working directory so we can directly search for the CAB file in the current directory
-$CABFile = Get-ChildItem -Path (Get-Location) -Filter "*.cab" | Select-Object -First 1
+# SCCM package's directory is our current working directory so we can directly search for the MSU file in the current directory
+$MSUFile = Get-ChildItem -Path (Get-Location) -Filter "*.msu" | Select-Object -First 1
 
-if (-not $CABFile) {
-    Write-Log "No CAB file found in the working directory: $(Get-Location)"
+if (-not $MSUFile) {
+    Write-Log "No MSU file found in the working directory: $(Get-Location)"
     Exit 1
 }
 
-# Log the CAB file that will be installed
-Write-Log "Found CAB file: $($CABFile.FullName)"
+# Log the MSU file that will be installed
+Write-Log "Found MSU file: $($MSUFile.FullName)"
 
-# Run the DISM command to install the CAB file, we like using DISM as sometime the old ways are the best :-)
+# Run the DISM command to install the MSU file, we like using DISM as sometime the old ways are the best :-)
 try {
-    Write-Log "Starting installation of CAB file: $($CABFile.FullName)"
-    $process = Start-Process dism -ArgumentList "/Online", "/Add-Package", "/PackagePath:$($CABFile.FullName)", "/LogPath:$logFileName", "/Quiet", "/NoRestart" -Wait -PassThru
+    Write-Log "Starting installation of MSU file: $($MSUFile.FullName)"
+    $process = Start-Process wusa $($MSUFile.FullName), "/quiet", "/norestart", "/LogPath:$logFileName" -Wait -PassThru
 
     # Check the exit code of the DISM process
     if ($process.ExitCode -ne 0) {
@@ -57,7 +57,7 @@ try {
         Write-Log "Check the log file for more details: $logFileName"
         Exit $process.ExitCode
     } else {
-        Write-Log "CAB file installed successfully!"
+        Write-Log "MSU file installed successfully!"
         Write-Log "Log file available at: $logFileName"
     }
 } catch {
