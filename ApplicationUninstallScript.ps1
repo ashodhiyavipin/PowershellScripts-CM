@@ -20,7 +20,7 @@ function Write-Log{
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "$timestamp - $message"
-    Write-Logut $logMessage
+    Write-Output $logMessage
  
     # Ensure log file path exists
     if (-not (Test-Path $logFilePath)) {
