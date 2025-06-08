@@ -1,110 +1,157 @@
 <#
 .SYNOPSIS
-Uninstalls applications via WMI and Registry automatically.
+    Silently uninstalls applications by querying the registry and executing their uninstall commands, with detailed logging.
+
 .DESCRIPTION
-This script automates the removal of applications from a machine completely and silently with no user input and no reboot. 
+    This script automates the silent removal of applications from Windows systems by searching common uninstall registry paths and executing any available QuietUninstallString or UninstallString entries. 
+    It runs without user interaction, suppresses popup windows, and avoids triggering MSI self-healing (no use of Win32_Product). 
+
+    The script logs all actions, including uninstall success/failure, to a persistent log file. A summary report is also included at the end of each execution. It supports both interactive use and parameterized automation.
+
+.PARAMETER AppName
+    The name of the application to search for and uninstall. If not supplied, the user will be prompted.
+
+.EXAMPLE
+    .\ApplicationUninstallScript.ps1 -AppName "Avaya Agent"
+
 .NOTES
-ApplicationUninstallScript.ps1 - V.Ashodhiya - 13-02-2025
-Script History:
-Version 1.0 - Script inception
-Version 1.1 - Added Logging function.
+    File Name:    ApplicationUninstallScript.ps1
+    Author:       V.Ashodhiya / Updated by A.Fletcher
+    Log Path:     C:\Windows\fndr\logs\ApplicationUninstall.log
+
+    Script History:
+    Version 1.0 - Initial script for basic app removal via registry
+    Version 1.1 - Added logging function and log file creation
+    Version 1.2 - Removed WMI dependency, improved error handling, added verbose logs
+    Version 1.3 - Summary reporting, support for param/prompt input, improved path handling, suppressed CMD popup window, and enhanced exception diagnostics, updated header section.
+    Version 1.4 - Added /qn switch for silent uninstall of applications. 
 #>
+
+param (
+    [string]$AppName = $null
+)
+
 #---------------------------------------------------------------------#
-# Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
 $logFileName = "$logFilePath\ApplicationUninstall.log"
-# Function to write logs
-function Write-Log{
-    param (
-        [string]$message
-    )
+
+# Summary tracking
+$Summary = @{
+    Found = 0
+    Success = 0
+    Failed = 0
+    NotFound = $true
+}
+
+function Write-Log {
+    param ([string]$message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "$timestamp - $message"
     Write-Output $logMessage
- 
-    # Ensure log file path exists
+
     if (-not (Test-Path $logFilePath)) {
         New-Item -Path $logFilePath -ItemType Directory | Out-Null
     }
- 
-    # Write Log Write-Logmessage to log file
+
     Add-Content -Path $logFileName -Value $logMessage
 }
-# Function to uninstall applications via Win32_Product (WMI)
 
-function Uninstall-WmiApp {
-    param (
-        [string]$appName
-    )
-    Write-Log "Checking for $appName via WMI..."
-    Write-Host "Checking for $appName via WMI..."
-    $installedApps = Get-WmiObject -Query "SELECT * FROM Win32_Product WHERE Name LIKE '%$appName%'"
-    if ($installedApps.Count -eq 0) {
-        Write-Log "$appName not found using WMI."
-        Write-Host "$appName not found using WMI."
-        return $false
-    } else {
-        foreach ($app in $installedApps) {
-            Write-Log "Uninstalling $($app.Name) via WMI..."
-            Write-Host "Uninstalling $($app.Name) via WMI..."
-            $app.Uninstall() | Out-Null
-            Write-Log "$($app.Name) has been uninstalled using WMI."
-            Write-Host "$($app.Name) has been uninstalled using WMI."
-        }
-        return $true
-    }
-}
+function Uninstall-RegistryApp {
+    param ([string]$appName)
 
- # Function to uninstall applications via registry
-
- function Uninstall-RegistryApp {
-    param (
-        [string]$appName
-    )
     $registryPaths = @(
         "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
     $appFound = $false
+
     foreach ($regPath in $registryPaths) {
-        $apps = Get-ItemProperty $regPath | Where-Object { $_.DisplayName -like "*$appName*" }
-        foreach ($app in $apps) {
-            $appFound = $true
-            Write-Log "Uninstalling $($app.DisplayName) from the registry..."
-            Write-Host "Uninstalling $($app.DisplayName) from the registry..." 
-            if ($app.UninstallString) {
-                # Remove leading and trailing double quotes from the UninstallString if present
-                $uninstallCmd = $app.UninstallString.Trim('"')
-                & "$uninstallCmd" /S
-                Write-Log "$($app.DisplayName) has been uninstalled using the registry."
-                Write-Host "$($app.DisplayName) has been uninstalled using the registry."
-            } else {
-                Write-Log "Uninstall string not found for $($app.DisplayName)."
+        try {
+            $apps = Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*$appName*" }
+            foreach ($app in $apps) {
+                $appFound = $true
+                $Summary.Found++
+                $Summary.NotFound = $false
+
+                Write-Log "Uninstalling $($app.DisplayName) from registry..."
+
+                $uninstallCmd = $null
+                if ($app.QuietUninstallString) {
+                    $uninstallCmd = $app.QuietUninstallString
+                    Write-Log "Using QuietUninstallString."
+                } elseif ($app.UninstallString) {
+                    $uninstallCmd = $app.UninstallString
+                    Write-Log "Using UninstallString."
+                }
+
+                if ($uninstallCmd) {
+                    # Check if the uninstall command is using MsiExec and append /qn if it is
+                    if ($uninstallCmd -like "MsiExec.exe*") {
+                        $uninstallCmd += " /qn"
+                        Write-Log "Modified uninstall command for silent uninstallation: $uninstallCmd"
+                    }
+
+                    Write-Log "Attempting to run uninstall command as-is: $uninstallCmd"
+
+                    try {
+                        Start-Process -FilePath "cmd.exe" `
+                                      -ArgumentList "/c", $uninstallCmd `
+                                      -Wait `
+                                      -WindowStyle Hidden `
+                                      -ErrorAction Stop
+
+                        Write-Log "$($app.DisplayName) successfully uninstalled."
+                        $Summary.Success++
+                    } catch {
+                        Write-Log "Error running uninstall command:"
+                        Write-Log "  Command       : $uninstallCmd"
+                        Write-Log "  Exception     : $_"
+                        if ($_.Exception.InnerException) {
+                            Write-Log "  InnerException: $($_.Exception.InnerException.Message)"
+                        }
+                        $Summary.Failed++
+                    }
+                } else {
+                    Write-Log "No uninstall command found for $($app.DisplayName)."
+                    $Summary.Failed++
+                }
             }
+        } catch {
+            Write-Log "Error reading registry path $regPath`: $_"
         }
     }
 
-    if (-not $appFound) {
-        Write-Log "$appName not found in the registry."
-        Write-Host "$appName not found in the registry."
-    }
     return $appFound
- }
- 
- # Main uninstall function combining both methods
- function Uninstall-Application {
-    param (
-        [string]$appName
-    )
-    $uninstalled = $false
-    # Try to uninstall via WMI first
-    $uninstalled = Uninstall-WmiApp $appName
-    # If not found via WMI, try via the registry
-    if (-not $uninstalled) {
-        Uninstall-RegistryApp $appName
+}
+
+function Uninstall-Application {
+    param ([string]$appName)
+    Write-Log "----- Starting uninstall for $appName -----"
+    $result = Uninstall-RegistryApp $appName
+
+    if (-not $result) {
+        Write-Log "$appName not found in registry."
     }
- }
- 
- #Uninstall ApplicationName
- Uninstall-Application "Avaya Agent" 
+
+    Write-Log "----- Finished uninstall for $appName -----"
+    Write-Log "Summary:"
+    Write-Log "Apps Found: $($Summary.Found)"
+    Write-Log "Uninstalled Successfully: $($Summary.Success)"
+    Write-Log "Failed Uninstalls: $($Summary.Failed)"
+    if ($Summary.NotFound) {
+        Write-Log "No matching applications were found."
+    }
+}
+
+# Main Script Execution
+Write-Log "Script Version 1.4"
+if (-not $AppName) {
+    $AppName = Read-Host "Enter the name of the application to uninstall"
+}
+
+try {
+    Uninstall-Application $AppName
+} catch {
+    Write-Log "Fatal error during uninstall: $_"
+}
