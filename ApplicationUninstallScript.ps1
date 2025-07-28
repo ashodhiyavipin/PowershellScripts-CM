@@ -16,7 +16,7 @@
 
 .NOTES
     File Name:    ApplicationUninstallScript.ps1
-    Author:       V.Ashodhiya / Updated by A.Fletcher
+    Author:       V.Ashodhiya | Daniel Fletcher / Updated by A.Fletcher
     Log Path:     C:\Windows\fndr\logs\ApplicationUninstall.log
 
     Script History:
