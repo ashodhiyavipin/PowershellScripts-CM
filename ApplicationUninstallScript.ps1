@@ -25,6 +25,7 @@
     Version 1.2 - Removed WMI dependency, improved error handling, added verbose logs
     Version 1.3 - Summary reporting, support for param/prompt input, improved path handling, suppressed CMD popup window, and enhanced exception diagnostics, updated header section.
     Version 1.4 - Added /qn switch for silent uninstall of applications. 
+    Version 1.5 - Added logic to change /I to /X where some applications have it in the UninstallString Registry Key.
 #>
 
 param (
@@ -86,6 +87,12 @@ function Uninstall-RegistryApp {
                 }
 
                 if ($uninstallCmd) {
+                    #Check if mseiexec.exe has /I and replace it with /X
+                    if ($uninstallCmd -match "^MsiExec\.exe\s*/I\s*\{[A-Z0-9-]+\}") {
+                        # Replace /I with /X and keep the product code
+                        Write-Log "Registry uninstall string has /I changing it to /X"
+                        $uninstallCmd = $uninstallCmd.Replace("/I", "/X")
+                    }
                     # Check if the uninstall command is using MsiExec and append /qn if it is
                     if ($uninstallCmd -like "MsiExec.exe*") {
                         $uninstallCmd += " /qn"
