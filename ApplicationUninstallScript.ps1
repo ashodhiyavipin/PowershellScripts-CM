@@ -26,6 +26,7 @@
     Version 1.3 - Summary reporting, support for param/prompt input, improved path handling, suppressed CMD popup window, and enhanced exception diagnostics, updated header section.
     Version 1.4 - Added /qn switch for silent uninstall of applications. 
     Version 1.5 - Added logic to change /I to /X where some applications have it in the UninstallString Registry Key.
+    Version 1.6 - Added logic to suppress automatic reboots during application uninstallation via msiexec.
 #>
 
 param (
@@ -95,7 +96,7 @@ function Uninstall-RegistryApp {
                     }
                     # Check if the uninstall command is using MsiExec and append /qn if it is
                     if ($uninstallCmd -like "MsiExec.exe*") {
-                        $uninstallCmd += " /qn"
+                        $uninstallCmd += " /qn /norestart"
                         Write-Log "Modified uninstall command for silent uninstallation: $uninstallCmd"
                     }
 
