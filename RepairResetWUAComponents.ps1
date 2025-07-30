@@ -15,7 +15,8 @@ https://docs.microsoft.com/en-us/windows/deployment/update/windows-update-resour
     Script History:
     Version 1.0 - Script inception
     Version 1.1 - Added Logging Function.
- 
+    Version 1.2 - Fixed Logging function typo. 
+                - Added logic to fix system files using dism and sfc.
 #>
 # Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
@@ -27,7 +28,7 @@ function Write-Log{
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "$timestamp - $message"
-    Write-Logut $logMessage
+    Write-Output $logMessage
  
     # Ensure log file path exists
     if (-not (Test-Path $logFilePath)) {
@@ -142,3 +143,9 @@ ForEach ($CacheItem in $CacheInfo) {
     $null = $CCMComObject.GetCacheInfo().DeleteCacheElement([string]$($CacheItem.CacheElementID))
 }
 
+# Run DISM and SFC to repair system files
+Write-Host "Running DISM and SFC to repair system files..."
+Write-Log "Running DISM and SFC to repair system files..."
+Start-Process -FilePath "dism.exe" -ArgumentList "/Online", "/Cleanup-Image", "/RestoreHealth" -Wait
+Start-Process -FilePath "sfc.exe" -ArgumentList "/scannow" -Wait
+Write-Log "Completed DISM and SFC scans"
