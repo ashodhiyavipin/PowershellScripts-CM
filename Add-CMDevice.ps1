@@ -20,6 +20,6 @@ foreach ($Hostname in $Hostnames) {
         Add-CMDeviceCollectionDirectMembershipRule -CollectionId $Collection.CollectionID -ResourceId (Get-CMDevice -Name $Hostname).ResourceId
         Write-Host "Added $Hostname to $CollectionName" -ForegroundColor Green
     } catch {
-        Write-Host "Error adding $Hostname: $_" -ForegroundColor Yellow
+        Write-Host "Error adding $Hostname : $_" -ForegroundColor Yellow
     }
 }
