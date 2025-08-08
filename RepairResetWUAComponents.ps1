@@ -17,6 +17,7 @@ https://docs.microsoft.com/en-us/windows/deployment/update/windows-update-resour
     Version 1.1 - Added Logging Function.
     Version 1.2 - Fixed Logging function typo. 
                 - Added logic to fix system files using dism and sfc.
+    Version 1.3 - Added logic to remove pending.xml which could block update. Removed dism and sfc since it causes delays during script running. 
 #>
 # Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
@@ -143,9 +144,9 @@ ForEach ($CacheItem in $CacheInfo) {
     $null = $CCMComObject.GetCacheInfo().DeleteCacheElement([string]$($CacheItem.CacheElementID))
 }
 
-# Run DISM and SFC to repair system files
-Write-Host "Running DISM and SFC to repair system files..."
-Write-Log "Running DISM and SFC to repair system files..."
-Start-Process -FilePath "dism.exe" -ArgumentList "/Online", "/Cleanup-Image", "/RestoreHealth" -Wait
-Start-Process -FilePath "sfc.exe" -ArgumentList "/scannow" -Wait
-Write-Log "Completed DISM and SFC scans"
+# Remove pending.xml if present
+$pendingXml = "$env:systemroot\WinSxS\pending.xml"
+if (Test-Path $pendingXml) {
+    Remove-Item $pendingXml -Force
+    Write-Log "Removed pending.xml"
+}
