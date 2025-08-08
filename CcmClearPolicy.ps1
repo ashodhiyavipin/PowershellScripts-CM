@@ -13,10 +13,15 @@ Description
 The script is useful for administrators who need to reset and reapply Group Policy settings on a machine. It ensures that any changes made to Group Policy are enforced immediately and that the system's policy state is consistent with the desired configuration.
 
 .Notes
-Version 1.0: Initial version of the script.
-Date: March 27, 2025
-Author: Vipin A.
-Changes: Created the script to automate the process of resetting and updating Group Policy settings. #>
+    File Name:    CcmClearPolicy.ps1
+    Author:       V.Ashodhiya  
+    Log Path:     C:\Windows\fndr\logs\CcmClearPolicy.log
+    Date: March 27, 2025
+
+    Script History:
+    Version 1.0 - Initial version of the script.
+    Version 1.1 - Corrected gpupdate parameter. Corrected Script .Notes and Script History.
+#>
 #---------------------------------------------------------------------#
 # Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
@@ -50,7 +55,7 @@ Invoke-CIMMethod -Namespace root\ccm -ClassName SMS_CLIENT -MethodName "ResetPol
 
 # Group Policy Update
 Write-Log "Fetching fresh group policy and applying them"
-gpupdate.exe -Force
+gpupdate.exe /Force
 
 # Machine Policy Assignments Request
 Write-Log "Fetching fresh ConfigMgr policies and applying them"
