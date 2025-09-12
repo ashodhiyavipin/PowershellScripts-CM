@@ -1,27 +1,25 @@
 <# 
 .SYNOPSIS 
 RepairResetWUAComponents.ps1 - Resets the Windows Update components
- 
 .DESCRIPTION  
 This script will reset all of the Windows Updates components to DEFAULT SETTINGS. 
- 
 .OUTPUTS 
-Results are printed to the console. Future releases will support outputting to a log file.  
- 
+Results are printed to the console.
 .NOTES 
 https://docs.microsoft.com/en-us/windows/deployment/update/windows-update-resources
-    
+
     RepairResetWUAComponents.ps1 - V.Ashodhiya - 25/10/2024
     Script History:
     Version 1.0 - Script inception
     Version 1.1 - Added Logging Function.
     Version 1.2 - Fixed Logging function typo. 
                 - Added logic to fix system files using dism and sfc.
-    Version 1.3 - Added logic to remove pending.xml which could block update. Removed dism and sfc since it causes delays during script running. 
+    Version 1.3 - Added logic to remove pending.xml which could block update. Removed dism and sfc since it causes delays during script running.
+    Version 1.4 - Corrected logfile name.
 #>
 # Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
-$logFileName = "$logFilePath\ApplicationUninstall.log"
+$logFileName = "$logFilePath\RepairWUAComponents.log"
 # Function to write logs
 function Write-Log{
     param (
