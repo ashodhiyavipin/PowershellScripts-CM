@@ -9,7 +9,8 @@
     and captures the timestamp and details of each package removal attempt.
 
 .PARAMETERS
-    None. The script targets predefined Appx packages listed within the script body.
+    targetApp
+        The name of the Appx package to target for removal (e.g., "Microsoft.YourApp").
 
 .OUTPUTS
     A log file located at 'C:\Windows\fndr\logs\RemoveOldAppxVersions.log' that contains a timestamped record of all actions taken.
@@ -20,6 +21,11 @@
     Version 1.0 - Script inception
 #>
 #---------------------------------------------------------------------#
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$targetApp
+)
+
 $logFilePath = "C:\Windows\fndr\logs"
 $logFileName = "$logFilePath\RemoveOldAppxVersions.log"
 
@@ -48,7 +54,7 @@ function OldPackages {
     Write-Log "Searching for all versions of package '$packageName'..."
 
     # Get installed and provisioned packages
-    $installedPackages   = Get-AppxPackage -AllUsers | Where-Object { $_.Name -like "*$packageName*" }
+    $installedPackages = Get-AppxPackage -AllUsers | Where-Object { $_.Name -like "*$packageName*" }
     $provisionedPackages = Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -like "*$packageName*" }
 
     # Combine both sets (normalize to objects with Name + Version)
@@ -68,12 +74,13 @@ function OldPackages {
     # Sort by version and identify latest
     $sorted = $allPackages | Sort-Object Version -Descending
     $latest = $sorted[0]
-    $older  = $sorted | Select-Object -Skip 1
+    $older = $sorted | Select-Object -Skip 1
 
     Write-Log "Latest version detected: $($latest.Version)"
     if ($older) {
         Write-Log "Found $($older.Count) older versions to remove."
-    } else {
+    }
+    else {
         Write-Log "No older versions found."
     }
 
@@ -87,17 +94,19 @@ function Remove-AppxPackageAndProvisionedPackage {
     Write-Log "Checking if package '$packageName' is provisioned or installed for any users."
 
     $provisionedPackage = Get-AppxProvisionedPackage -Online | Where-Object DisplayName -Like "*$packageName*"
-    $installedPackage   = Get-AppxPackage -AllUsers | Where-Object Name -Like "*$packageName*"
+    $installedPackage = Get-AppxPackage -AllUsers | Where-Object Name -Like "*$packageName*"
 
     if ($provisionedPackage) {
         Write-Log "Provisioned package '$packageName' exists. Attempting to remove it..."
         try {
             $provisionedPackage | Remove-AppxProvisionedPackage -Online -ErrorAction Stop
             Write-Log "Successfully removed provisioned package '$packageName'."
-        } catch {
+        }
+        catch {
             Write-Log "Failed to remove provisioned package '$packageName'. Error: $_"
         }
-    } else {
+    }
+    else {
         Write-Log "Provisioned package '$packageName' does not exist. Skipping removal."
     }
 
@@ -106,16 +115,18 @@ function Remove-AppxPackageAndProvisionedPackage {
         try {
             $installedPackage | Remove-AppxPackage -AllUsers -ErrorAction Stop
             Write-Log "Successfully removed installed package '$packageName'."
-        } catch {
+        }
+        catch {
             Write-Log "Failed to remove installed package '$packageName'. Error: $_"
         }
-    } else {
+    }
+    else {
         Write-Log "Installed package '$packageName' does not exist for any users. Skipping removal."
     }
 }
 
 # ------------------ Main Logic ------------------ #
-$targetApp = "YourUWPAppNameHere"   # Replace with the UWP app name (e.g., "Microsoft.YourApp")
+
 
 # Get all old versions
 $oldVersions = OldPackages -packageName $targetApp
