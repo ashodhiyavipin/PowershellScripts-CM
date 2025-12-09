@@ -12,13 +12,34 @@
     None
 
 .OUTPUTS
-    A log file located at 'C:\Windows\fndr\logs\DownloadUWPApps.log' that contains a timestamped record of all actions taken.
+    A log file located at the user's Downloads folder (e.g., 'C:\Users\<User>\Downloads\DownloadUWPApps.log') that contains a timestamped record of all actions taken.
 
 .NOTES
-    DownloadUWPApps.ps1
+    Download-UWPApps.ps1
     Script History:
     Version 1.0 - Script inception
+    Version 1.1 - Added Microsoft.WindowsAlarms and added logging function.
 #>
+$logFilePath = "$env:USERPROFILE\Downloads"
+$logFileName = "$logFilePath\DownloadUWPApps.log"
+
+# Function to write logs
+function Write-Log {
+    param (
+        [string]$message
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "$timestamp - $message"
+    Write-Output $logMessage
+    
+    # Ensure log file path exists
+    if (-not (Test-Path $logFilePath)) {
+        New-Item -Path $logFilePath -ItemType Directory | Out-Null
+    }
+    
+    # Write log message to log file
+    Add-Content -Path $logFileName -Value $logMessage
+}
 $appsToDownload = @{
     "9WZDNCRFJBMP" = @{ Name = "Microsoft.WindowsStore"; Platform = "Windows.Desktop" }
     "9N4D0MSMP0PT" = @{ Name = "Microsoft.VP9VideoExtensions"; Platform = "Windows.Universal" }
@@ -37,14 +58,13 @@ $appsToDownload = @{
     "9N1F85V9T8BN" = @{ Name = "MicrosoftCorporationII.Windows365"; Platform = "Windows.Desktop" }
     "9NBLGGH4QGHW" = @{ Name = "Microsoft.MicrosoftStickyNotes"; Platform = "Windows.Desktop" }
     "9PGJGD53TN86" = @{ Name = "WinDbg"; Platform = "Windows.Desktop" }
+    "9WZDNCRFJ3PR" = @{ Name = "Microsoft.WindowsAlarms"; Platform = "Windows.Desktop" }
 }
 foreach ($id in $appsToDownload.Keys) {
     $app = $appsToDownload[$id]
     $platform = $app.Platform
 
-    if (-not $platform) { $platform = "Windows.Desktop" } # Default fallback
-
-    Write-Host "Downloading $($app.Name) ($id) for platform: $platform..."
+    Write-Log "Downloading $($app.Name) ($id) for platform: $platform..."
 
     winget download --id $id --Platform $platform --architecture x64 --accept-source-agreements --accept-package-agreements -s msstore
 }
