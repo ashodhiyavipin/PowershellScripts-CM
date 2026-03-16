@@ -17,6 +17,7 @@ https://docs.microsoft.com/en-us/windows/deployment/update/windows-update-resour
     Version 1.3 - Added logic to remove pending.xml which could block update. Removed dism and sfc since it causes delays during script running.
     Version 1.4 - Corrected logfile name.
     Version 1.5 - Added better control over Services.
+    Version 1.6 - Added error handling and extended logging for all steps. 
 #>
 # Define the path for the log file
 $logFilePath = "C:\Windows\fndr\logs"
