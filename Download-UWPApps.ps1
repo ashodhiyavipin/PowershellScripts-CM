@@ -19,6 +19,7 @@
     Script History:
     Version 1.0 - Script inception
     Version 1.1 - Added Microsoft.WindowsAlarms and added logging function.
+    Version 1.2 - Added folder renaming functionality.
 #>
 $logFilePath = "$env:USERPROFILE\Downloads"
 $logFileName = "$logFilePath\DownloadUWPApps.log"
@@ -43,7 +44,7 @@ function Write-Log {
 $appsToDownload = @{
     "9WZDNCRFJBMP" = @{ Name = "Microsoft.WindowsStore"; Platform = "Windows.Desktop" }
     "9N4D0MSMP0PT" = @{ Name = "Microsoft.VP9VideoExtensions"; Platform = "Windows.Universal" }
-    "9MZ95KL8MR0L" = @{ Name = "Microsoft.ScreenSketch"; Platform = "Windows.Universal" }
+    "9MZ95KL8MR0L" = @{ Name = "Microsoft.ScreenSketch"; Platform = "Windows.Desktop" }
     "9WZDNCRFJ3PZ" = @{ Name = "Microsoft.CompanyPortal"; Platform = "Windows.Universal" }
     "9PMMSR1CGPWG" = @{ Name = "Microsoft.HEIFImageExtension"; Platform = "Windows.Universal" }
     "9PCFS5B6T72H" = @{ Name = "Microsoft.Paint"; Platform = "Windows.Desktop" }
@@ -51,12 +52,12 @@ $appsToDownload = @{
     "9N5TDP8VCMHS" = @{ Name = "Microsoft.WebMediaExtensions"; Platform = "Windows.Universal" }
     "9PG2DK419DRG" = @{ Name = "Microsoft.WebpImageExtension"; Platform = "Windows.Universal" }
     "9WZDNCRFJBH4" = @{ Name = "Microsoft.Windows.Photos"; Platform = "Windows.Desktop" }
-    "9WZDNCRFHVN5" = @{ Name = "Microsoft.WindowsCalculator"; Platform = "Windows.Universal" }
+    "9WZDNCRFHVN5" = @{ Name = "Microsoft.WindowsCalculator"; Platform = "Windows.Desktop" }
     "9WZDNCRFJBBG" = @{ Name = "Microsoft.WindowsCamera"; Platform = "Windows.Desktop" }
     "9MSMLRH6LZF3" = @{ Name = "Microsoft.WindowsNotepad"; Platform = "Windows.Desktop" }
     "9N0DX20HK701" = @{ Name = "Microsoft.WindowsTerminal"; Platform = "Windows.Desktop" }
     "9N1F85V9T8BN" = @{ Name = "MicrosoftCorporationII.Windows365"; Platform = "Windows.Desktop" }
-    "9NBLGGH4QGHW" = @{ Name = "Microsoft.MicrosoftStickyNotes"; Platform = "Windows.Desktop" }
+    "9NBLGGH4QGHW" = @{ Name = "Microsoft.MicrosoftStickyNotes"; Platform = "Windows.Universal" }
     "9PGJGD53TN86" = @{ Name = "WinDbg"; Platform = "Windows.Desktop" }
     "9WZDNCRFJ3PR" = @{ Name = "Microsoft.WindowsAlarms"; Platform = "Windows.Desktop" }
 }
@@ -67,4 +68,23 @@ foreach ($id in $appsToDownload.Keys) {
     Write-Log "Downloading $($app.Name) ($id) for platform: $platform..."
 
     winget download --id $id --Platform $platform --architecture x64 --accept-source-agreements --accept-package-agreements -s msstore
+}
+
+# Rename downloaded folders from ID to Name
+foreach ($id in $appsToDownload.Keys) {
+    $appName = $appsToDownload[$id].Name
+    $sourcePath = Join-Path -Path $logFilePath -ChildPath $id
+
+    if (Test-Path $sourcePath) {
+        try {
+            Rename-Item -Path $sourcePath -NewName $appName -ErrorAction Stop
+            Write-Log "Renamed folder '$id' to '$appName'"
+        }
+        catch {
+            Write-Log "Failed to rename folder '$id' to '$appName': $_"
+        }
+    }
+    else {
+        Write-Log "Folder '$id' not found for renaming"
+    }
 }
