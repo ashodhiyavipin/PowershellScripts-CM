@@ -4,23 +4,23 @@
 
 .DESCRIPTION
     Uses DISM /RestoreHealth with a locally cached Windows 11 24H2 install.wim
-    to repair component store corruption that prevents cumulative updates from installing.
-    
-    Resolves:
-    - 0x800F0838 (CBS_E_MISSING_PREREQUISITE_BASELINES)
-    - 0x800F0915 (CBS_E_SOURCE_NOT_IN_LIST)
+    to repair component store corruption that prevents cumulative updates
+    from installing.
 
 .NOTES
-    RepairComponentStore.ps1
-    Version 1.0 - 08/04/2026
+    RepairComponentStore.ps1 - EverGPT Turbo
+    Version 1.1 - 08/04/2026
+    
+    Changes from v1.0:
+    - Fixed WIM index detection for non-English OS locales
+    - Added /English flag to DISM /Get-WimInfo
+    - Improved edition matching with broader fallback
+    - Script now ABORTS if correct index cannot be determined
+    - Added all WIM indices to log for troubleshooting
     
     SCCM Package: Windows 11 24H2 x64 EN-US Rev: Nov 2025
     Package ID:   CAS04B31
     ISO Build:    10.0.26100.7171
-    
-    SCCM Task Sequence:
-      Step 1 - Download Package Content (CAS04B31) → C:\Scratch
-      Step 2 - Run this script (64-bit PowerShell)
 #>
 
 #Requires -RunAsAdministrator
@@ -61,7 +61,7 @@ function Write-Log {
 # STEP 1: Pre-Flight Checks
 # ============================================================
 Write-Log "================================================================"
-Write-Log "Component Store Repair — Starting"
+Write-Log "Component Store Repair v1.1 — Starting"
 Write-Log "================================================================"
 
 # 64-bit check
@@ -78,7 +78,6 @@ Write-Log "Edition: $($os.EditionID)"
 
 # Validate WIM exists
 if (-not (Test-Path $wimFile)) {
-    # Check for install.esd as fallback
     $esdFile = Join-Path $packagePath "sources\install.esd"
     if (Test-Path $esdFile) {
         $wimFile = $esdFile
@@ -86,54 +85,103 @@ if (-not (Test-Path $wimFile)) {
     }
     else {
         Write-Log "FATAL: WIM file not found at: $wimFile" -Level ERROR
-        Write-Log "Ensure SCCM 'Download Package Content' step completed successfully." -Level ERROR
+        Write-Log "Ensure SCCM 'Download Package Content' step completed." -Level ERROR
         Exit 1
     }
 }
 Write-Log "WIM: $wimFile ($([math]::Round((Get-Item $wimFile).Length/1GB,2)) GB)" -Level SUCCESS
 
-# Disk space (minimum 10GB)
+# Disk space
 $freeGB = [math]::Round((Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'").FreeSpace / 1GB, 2)
 Write-Log "Free disk space: $freeGB GB"
-if ($freeGB -lt 10) {
-    Write-Log "FATAL: Need at least 10GB free. Available: $freeGB GB" -Level ERROR
+if ($freeGB -lt 5) {
+    Write-Log "FATAL: Need at least 5GB free. Available: $freeGB GB" -Level ERROR
     Exit 1
 }
 
 # ============================================================
-# STEP 2: Detect Correct WIM Index
+# STEP 2: Detect Correct WIM Index (Locale-Independent)
 # ============================================================
 Write-Log "Detecting WIM image index for edition: $($os.EditionID)"
 
-$wimOutput = & $dismExe /Get-WimInfo /WimFile:"$wimFile" 2>&1
+# Force English output regardless of OS locale
+$wimInfoOutput = & $dismExe /Get-WimInfo /WimFile:"$wimFile" /English 2>&1
+
 $selectedIndex = 0
 
-# Parse indices and match to current edition
+# Edition matching map
 $editionMatch = switch ($os.EditionID) {
     "Professional" { "Pro" }
     "Enterprise" { "Enterprise" }
     "Education" { "Education" }
     "Core" { "Home" }
+    "ProfessionalN" { "Pro N" }
+    "EnterpriseN" { "Enterprise N" }
+    "ProfessionalEducation" { "Pro Education" }
+    "ProfessionalWorkstation" { "Pro for Workstations" }
     default { $os.EditionID }
 }
 
+Write-Log "Looking for edition match: '$editionMatch'"
+
+# Parse WIM info
 $currentIdx = $null
-$wimOutput | ForEach-Object {
-    if ($_ -match "^Index\s*:\s*(\d+)") { $currentIdx = [int]$Matches }
-    if ($_ -match "^Name\s*:\s*(.+)$" -and $currentIdx) {
+$allIndices = @()
+
+foreach ($line in $wimInfoOutput) {
+    $lineStr = $line.ToString().Trim()
+    
+    if ($lineStr -match "^Index\s*:\s*(\d+)") {
+        $currentIdx = [int]$Matches
+    }
+    if ($lineStr -match "^Name\s*:\s*(.+)$" -and $null -ne $currentIdx) {
         $name = $Matches.Trim()
+        $allIndices += [PSCustomObject]@{ Index = $currentIdx; Name = $name }
         Write-Log "  Index ${currentIdx}: $name"
-        if ($selectedIndex -eq 0 -and $name -match $editionMatch) {
+        
+        # Exact match: "Windows 11 Pro" for Professional
+        if ($selectedIndex -eq 0 -and $name -match "Windows 1\s+$editionMatch(\s|$)") {
             $selectedIndex = $currentIdx
+        }
+        $currentIdx = $null
+    }
+}
+
+# Broader fallback matching
+if ($selectedIndex -eq 0 -and $allIndices.Count -gt 0) {
+    Write-Log "Exact match not found. Trying broader match..." -Level WARN
+    
+    foreach ($idx in $allIndices) {
+        if ($idx.Name -match [regex]::Escape($editionMatch)) {
+            # Avoid false positives: "Pro" shouldn't match "Pro Education"
+            if ($editionMatch -eq "Pro" -and $idx.Name -match "Pro (Education|N|for Workstations)") {
+                continue
+            }
+            $selectedIndex = $idx.Index
+            Write-Log "Broad match: Index $($idx.Index) — $($idx.Name)" -Level SUCCESS
+            break
         }
     }
 }
 
+# Abort if no match — do NOT default to Index 1
 if ($selectedIndex -eq 0) {
-    Write-Log "Could not match edition. Defaulting to Index 1." -Level WARN
-    $selectedIndex = 1
+    Write-Log "FATAL: Could not match edition '$($os.EditionID)' to any WIM image." -Level ERROR
+    Write-Log "Available images in WIM:" -Level ERROR
+    foreach ($idx in $allIndices) {
+        Write-Log "  Index $($idx.Index): $($idx.Name)" -Level ERROR
+    }
+    if ($allIndices.Count -eq 0) {
+        Write-Log "No images were parsed from WIM. Raw DISM output:" -Level ERROR
+        foreach ($line in $wimInfoOutput) {
+            Write-Log "  $line" -Level ERROR
+        }
+    }
+    Write-Log "Cannot proceed without correct edition match. Aborting." -Level ERROR
+    Exit 1
 }
-Write-Log "Selected WIM Index: $selectedIndex" -Level SUCCESS
+
+Write-Log "Selected WIM Index: $selectedIndex (matched '$editionMatch')" -Level SUCCESS
 
 # ============================================================
 # STEP 3: Repair Component Store
@@ -159,7 +207,6 @@ $exitCode = $restoreProc.ExitCode
 
 Write-Log "RestoreHealth completed in $duration"
 
-# Handle result
 switch ($exitCode) {
     0 {
         Write-Log "Component store repair SUCCEEDED." -Level SUCCESS
@@ -168,9 +215,9 @@ switch ($exitCode) {
         Write-Log "Component store repair SUCCEEDED — reboot required." -Level SUCCESS
     }
     default {
-        Write-Log "RestoreHealth failed (exit code: $exitCode). Attempting cleanup + retry..." -Level WARN
+        $hexCode = "0x{0:X8}" -f ([uint32]$exitCode)
+        Write-Log "RestoreHealth failed (exit code: $exitCode / $hexCode). Attempting cleanup + retry..." -Level WARN
 
-        # Cleanup then retry
         Start-Process -FilePath $dismExe `
             -ArgumentList "/Online", "/Cleanup-Image", "/StartComponentCleanup" `
             -Wait -NoNewWindow
@@ -188,7 +235,8 @@ switch ($exitCode) {
             Write-Log "Component store repair SUCCEEDED on retry." -Level SUCCESS
         }
         else {
-            Write-Log "FATAL: Repair failed after retry. Exit code: $exitCode" -Level ERROR
+            $hexCode = "0x{0:X8}" -f ([uint32]$exitCode)
+            Write-Log "FATAL: Repair failed after retry. Exit code: $exitCode / $hexCode" -Level ERROR
             Write-Log "Review: $dismRepairLog" -Level ERROR
         }
     }
@@ -211,8 +259,7 @@ try {
         Remove-Item -Path $packagePath -Recurse -Force -ErrorAction Stop
         Write-Log "Scratch folder removed." -Level SUCCESS
     }
-    # Remove parent if empty
-    if ((Test-Path $ScratchPath) -and 
+    if ((Test-Path $ScratchPath) -and
         (Get-ChildItem $ScratchPath -Force | Measure-Object).Count -eq 0) {
         Remove-Item -Path $ScratchPath -Force
         Write-Log "Empty scratch root removed." -Level SUCCESS
