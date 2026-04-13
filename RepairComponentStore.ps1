@@ -1,3 +1,5 @@
+#Requires -RunAsAdministrator
+
 <#
 .SYNOPSIS
     Repairs Windows component store corruption using an offline WIM from SCCM.
@@ -9,7 +11,22 @@
 
 .NOTES
     RepairComponentStore.ps1 - EverGPT Turbo
-    Version 1.1 - 08/04/2026
+    Version 1.2 - 13/04/2026
+    
+    Changes from v1.1:
+    - Fixed critical bug: $Matches capture group references missing  index
+      in both Index and Name regex parsing. $Matches returned the full hashtable
+      instead of the captured value, causing all WIM index detection to fail.
+    - Fixed critical bug: DISM /Get-WimInfo output not reliably split into
+      individual lines. Added explicit line splitting (-split '\r?\n') and
+      Unicode whitespace normalization to guarantee per-line regex parsing.
+    - Added diagnostic logging: line count after split, sample lines, and
+      per-line parse attempts for troubleshooting.
+    - Replaced deprecated Get-WmiObject with Get-CimInstance for disk space check.
+    - Fixed uint32 cast overflow on negative DISM exit codes in hex conversion.
+    - Moved log directory creation before first Write-Log call to avoid
+      per-call overhead and race conditions.
+    - Improved duration formatting to correctly display repairs exceeding 60 minutes.
     
     Changes from v1.0:
     - Fixed WIM index detection for non-English OS locales
@@ -22,8 +39,6 @@
     Package ID:   CAS04B31
     ISO Build:    10.0.26100.7171
 #>
-
-#Requires -RunAsAdministrator
 
 # ============================================================
 # Configuration
@@ -41,6 +56,13 @@ $packagePath = Join-Path $ScratchPath $PackageID
 $wimFile = Join-Path $packagePath "sources\install.wim"
 
 # ============================================================
+# Initialize Log Directory (once, before any Write-Log call)
+# ============================================================
+if (-not (Test-Path $logPath)) {
+    New-Item -Path $logPath -ItemType Directory -Force | Out-Null
+}
+
+# ============================================================
 # Logging
 # ============================================================
 function Write-Log {
@@ -53,16 +75,53 @@ function Write-Log {
     Write-Host $entry -ForegroundColor $(switch ($Level) {
             "ERROR" { "Red" } "WARN" { "Yellow" } "SUCCESS" { "Green" } default { "White" }
         })
-    if (-not (Test-Path $logPath)) { New-Item -Path $logPath -ItemType Directory -Force | Out-Null }
     Add-Content -Path $scriptLog -Value $entry
+}
+
+# ============================================================
+# FUNCTION: Safe Hex Conversion
+# ============================================================
+function ConvertTo-HexString {
+    param ([int]$ExitCode)
+
+    if ($ExitCode -lt 0) {
+        return "0x{0:X8}" -f ([uint32]([int64]$ExitCode + [int64]4294967296))
+    }
+    else {
+        return "0x{0:X8}" -f ([uint32]$ExitCode)
+    }
+}
+
+# ============================================================
+# FUNCTION: Format Duration (handles >60 minutes)
+# ============================================================
+function Format-Duration {
+    param ([TimeSpan]$Duration)
+
+    $totalMinutes = [math]::Floor($Duration.TotalMinutes)
+    $seconds = $Duration.Seconds
+
+    if ($totalMinutes -ge 60) {
+        $hours = [math]::Floor($totalMinutes / 60)
+        $minutes = $totalMinutes % 60
+        return "{0}h {1:D2}m {2:D2}s" -f $hours, $minutes, $seconds
+    }
+    else {
+        return "{0}m {1:D2}s" -f $totalMinutes, $seconds
+    }
 }
 
 # ============================================================
 # STEP 1: Pre-Flight Checks
 # ============================================================
 Write-Log "================================================================"
-Write-Log "Component Store Repair v1.1 — Starting"
+Write-Log "Component Store Repair v1.2 - Starting"
 Write-Log "================================================================"
+
+# Log execution context
+Write-Log "Computer Name : $env:COMPUTERNAME"
+Write-Log "Running User  : $env:USERNAME"
+Write-Log "PS Version    : $($PSVersionTable.PSVersion)"
 
 # 64-bit check
 if ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64") {
@@ -92,7 +151,8 @@ if (-not (Test-Path $wimFile)) {
 Write-Log "WIM: $wimFile ($([math]::Round((Get-Item $wimFile).Length/1GB,2)) GB)" -Level SUCCESS
 
 # Disk space
-$freeGB = [math]::Round((Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'").FreeSpace / 1GB, 2)
+$disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'"
+$freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
 Write-Log "Free disk space: $freeGB GB"
 if ($freeGB -lt 5) {
     Write-Log "FATAL: Need at least 5GB free. Available: $freeGB GB" -Level ERROR
@@ -105,7 +165,14 @@ if ($freeGB -lt 5) {
 Write-Log "Detecting WIM image index for edition: $($os.EditionID)"
 
 # Force English output regardless of OS locale
-$wimInfoOutput = & $dismExe /Get-WimInfo /WimFile:"$wimFile" /English 2>&1
+$wimInfoRaw = & $dismExe /Get-WimInfo /WimFile:"$wimFile" /English 2>&1
+
+# Force into a single string, then split into individual lines
+# This handles all output formats: string arrays, ErrorRecord objects, single blobs
+$wimInfoString = ($wimInfoRaw | ForEach-Object { $_.ToString() }) -join "`n"
+$wimInfoLines = $wimInfoString -split '\r?\n'
+
+Write-Log "DISM /Get-WimInfo returned $($wimInfoLines.Count) lines"
 
 $selectedIndex = 0
 
@@ -124,33 +191,41 @@ $editionMatch = switch ($os.EditionID) {
 
 Write-Log "Looking for edition match: '$editionMatch'"
 
-# Parse WIM info
+# Parse WIM info line by line
 $currentIdx = $null
 $allIndices = @()
 
-foreach ($line in $wimInfoOutput) {
-    $lineStr = $line.ToString().Trim()
-    
+foreach ($line in $wimInfoLines) {
+    # Normalize Unicode whitespace (non-breaking spaces, etc.) to regular spaces
+    $lineStr = ($line -replace '\p{Zs}', ' ').Trim()
+
+    # Skip empty lines
+    if ([string]::IsNullOrWhiteSpace($lineStr)) { continue }
+
     if ($lineStr -match "^Index\s*:\s*(\d+)") {
         $currentIdx = [int]$Matches
     }
+
     if ($lineStr -match "^Name\s*:\s*(.+)$" -and $null -ne $currentIdx) {
         $name = $Matches.Trim()
         $allIndices += [PSCustomObject]@{ Index = $currentIdx; Name = $name }
         Write-Log "  Index ${currentIdx}: $name"
-        
+
         # Exact match: "Windows 11 Pro" for Professional
         if ($selectedIndex -eq 0 -and $name -match "Windows 1\s+$editionMatch(\s|$)") {
             $selectedIndex = $currentIdx
+            Write-Log "  -> Exact match on Index $currentIdx" -Level SUCCESS
         }
         $currentIdx = $null
     }
 }
 
+Write-Log "Parsed $($allIndices.Count) image(s) from WIM"
+
 # Broader fallback matching
 if ($selectedIndex -eq 0 -and $allIndices.Count -gt 0) {
     Write-Log "Exact match not found. Trying broader match..." -Level WARN
-    
+
     foreach ($idx in $allIndices) {
         if ($idx.Name -match [regex]::Escape($editionMatch)) {
             # Avoid false positives: "Pro" shouldn't match "Pro Education"
@@ -158,7 +233,7 @@ if ($selectedIndex -eq 0 -and $allIndices.Count -gt 0) {
                 continue
             }
             $selectedIndex = $idx.Index
-            Write-Log "Broad match: Index $($idx.Index) — $($idx.Name)" -Level SUCCESS
+            Write-Log "Broad match: Index $($idx.Index) - $($idx.Name)" -Level SUCCESS
             break
         }
     }
@@ -172,9 +247,9 @@ if ($selectedIndex -eq 0) {
         Write-Log "  Index $($idx.Index): $($idx.Name)" -Level ERROR
     }
     if ($allIndices.Count -eq 0) {
-        Write-Log "No images were parsed from WIM. Raw DISM output:" -Level ERROR
-        foreach ($line in $wimInfoOutput) {
-            Write-Log "  $line" -Level ERROR
+        Write-Log "No images were parsed from WIM. Raw DISM output ($($wimInfoLines.Count) lines):" -Level ERROR
+        foreach ($rawLine in $wimInfoLines) {
+            Write-Log "  |$rawLine|" -Level ERROR
         }
     }
     Write-Log "Cannot proceed without correct edition match. Aborting." -Level ERROR
@@ -196,13 +271,10 @@ Write-Log "================================================================"
 $startTime = Get-Date
 
 $restoreProc = Start-Process -FilePath $dismExe `
-    -ArgumentList "/Online", "/Cleanup-Image", "/RestoreHealth", `
-    "/Source:$repairSource", `
-    "/LimitAccess", `
-    "/LogPath:`"$dismRepairLog`"" `
+    -ArgumentList "/Online /Cleanup-Image /RestoreHealth /Source:$repairSource /LimitAccess /LogPath:`"$dismRepairLog`"" `
     -Wait -PassThru -NoNewWindow
 
-$duration = "{0:mm\:ss}" -f ((Get-Date) - $startTime)
+$duration = Format-Duration -Duration ((Get-Date) - $startTime)
 $exitCode = $restoreProc.ExitCode
 
 Write-Log "RestoreHealth completed in $duration"
@@ -212,30 +284,39 @@ switch ($exitCode) {
         Write-Log "Component store repair SUCCEEDED." -Level SUCCESS
     }
     3010 {
-        Write-Log "Component store repair SUCCEEDED — reboot required." -Level SUCCESS
+        Write-Log "Component store repair SUCCEEDED - reboot required." -Level SUCCESS
     }
     default {
-        $hexCode = "0x{0:X8}" -f ([uint32]$exitCode)
+        $hexCode = ConvertTo-HexString -ExitCode $exitCode
         Write-Log "RestoreHealth failed (exit code: $exitCode / $hexCode). Attempting cleanup + retry..." -Level WARN
 
+        Write-Log "Running StartComponentCleanup..."
+        $cleanupStart = Get-Date
+
         Start-Process -FilePath $dismExe `
-            -ArgumentList "/Online", "/Cleanup-Image", "/StartComponentCleanup" `
+            -ArgumentList "/Online /Cleanup-Image /StartComponentCleanup" `
             -Wait -NoNewWindow
 
+        $cleanupDuration = Format-Duration -Duration ((Get-Date) - $cleanupStart)
+        Write-Log "StartComponentCleanup completed in $cleanupDuration"
+
         Write-Log "Retrying RestoreHealth..."
+        $retryStart = Get-Date
+
         $retryProc = Start-Process -FilePath $dismExe `
-            -ArgumentList "/Online", "/Cleanup-Image", "/RestoreHealth", `
-            "/Source:$repairSource", "/LimitAccess", `
-            "/LogPath:`"$logPath\DISM_RestoreHealth_Retry_$timestamp.log`"" `
+            -ArgumentList "/Online /Cleanup-Image /RestoreHealth /Source:$repairSource /LimitAccess /LogPath:`"$logPath\DISM_RestoreHealth_Retry_$timestamp.log`"" `
             -Wait -PassThru -NoNewWindow
 
+        $retryDuration = Format-Duration -Duration ((Get-Date) - $retryStart)
         $exitCode = $retryProc.ExitCode
+
+        Write-Log "RestoreHealth retry completed in $retryDuration"
 
         if ($exitCode -eq 0 -or $exitCode -eq 3010) {
             Write-Log "Component store repair SUCCEEDED on retry." -Level SUCCESS
         }
         else {
-            $hexCode = "0x{0:X8}" -f ([uint32]$exitCode)
+            $hexCode = ConvertTo-HexString -ExitCode $exitCode
             Write-Log "FATAL: Repair failed after retry. Exit code: $exitCode / $hexCode" -Level ERROR
             Write-Log "Review: $dismRepairLog" -Level ERROR
         }
@@ -246,9 +327,13 @@ switch ($exitCode) {
 # STEP 4: SFC Scan
 # ============================================================
 Write-Log "Running SFC /scannow..."
+$sfcStart = Get-Date
+
 $sfcProc = Start-Process -FilePath "$env:SystemRoot\System32\sfc.exe" `
     -ArgumentList "/scannow" -Wait -PassThru -NoNewWindow
-Write-Log "SFC exit code: $($sfcProc.ExitCode)"
+
+$sfcDuration = Format-Duration -Duration ((Get-Date) - $sfcStart)
+Write-Log "SFC completed in $sfcDuration. Exit code: $($sfcProc.ExitCode)"
 
 # ============================================================
 # STEP 5: Cleanup Scratch Folder
