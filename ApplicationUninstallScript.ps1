@@ -27,6 +27,7 @@
     Version 1.4 - Added /qn switch for silent uninstall of applications. 
     Version 1.5 - Added logic to change /I to /X where some applications have it in the UninstallString Registry Key.
     Version 1.6 - Added logic to suppress automatic reboots during application uninstallation via msiexec.
+    Version 1.7 - Added registry enumeration phase to log all matching registry locations and uninstall strings before uninstallation begins.
 #>
 
 param (
@@ -39,9 +40,9 @@ $logFileName = "$logFilePath\ApplicationUninstall.log"
 
 # Summary tracking
 $Summary = @{
-    Found = 0
-    Success = 0
-    Failed = 0
+    Found    = 0
+    Success  = 0
+    Failed   = 0
     NotFound = $true
 }
 
@@ -68,67 +69,117 @@ function Uninstall-RegistryApp {
     )
     $appFound = $false
 
+    # --- Phase 1: Enumerate and log all matching registry entries before uninstalling ---
+    Write-Log "===== Registry Enumeration Phase ====="
+    Write-Log "Searching for '$appName' across all registry uninstall locations..."
+
+    $allMatchedApps = @()
+
     foreach ($regPath in $registryPaths) {
         try {
+            Write-Log "Scanning registry path: $regPath"
             $apps = Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*$appName*" }
+
+            if (-not $apps) {
+                Write-Log "  No matches found in: $regPath"
+                continue
+            }
+
             foreach ($app in $apps) {
-                $appFound = $true
-                $Summary.Found++
-                $Summary.NotFound = $false
+                # Resolve the actual registry key path for this entry
+                $keyPath = if ($app.PSPath) { $app.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', '' } else { 'Unknown' }
 
-                Write-Log "Uninstalling $($app.DisplayName) from registry..."
+                Write-Log "  [MATCH] DisplayName    : $($app.DisplayName)"
+                Write-Log "          Registry Key   : $keyPath"
+                Write-Log "          UninstallString : $(if ($app.UninstallString) { $app.UninstallString } else { '(not set)' })"
+                Write-Log "          QuietUninstall  : $(if ($app.QuietUninstallString) { $app.QuietUninstallString } else { '(not set)' })"
 
-                $uninstallCmd = $null
-                if ($app.QuietUninstallString) {
-                    $uninstallCmd = $app.QuietUninstallString
-                    Write-Log "Using QuietUninstallString."
-                } elseif ($app.UninstallString) {
-                    $uninstallCmd = $app.UninstallString
-                    Write-Log "Using UninstallString."
-                }
-
-                if ($uninstallCmd) {
-                    #Check if mseiexec.exe has /I and replace it with /X
-                    if ($uninstallCmd -match "^MsiExec\.exe\s*/I\s*\{[A-Z0-9-]+\}") {
-                        # Replace /I with /X and keep the product code
-                        Write-Log "Registry uninstall string has /I changing it to /X"
-                        $uninstallCmd = $uninstallCmd.Replace("/I", "/X")
-                    }
-                    # Check if the uninstall command is using MsiExec and append /qn if it is
-                    if ($uninstallCmd -like "MsiExec.exe*") {
-                        $uninstallCmd += " /qn /norestart"
-                        Write-Log "Modified uninstall command for silent uninstallation: $uninstallCmd"
-                    }
-
-                    Write-Log "Attempting to run uninstall command as-is: $uninstallCmd"
-
-                    try {
-                        Start-Process -FilePath "cmd.exe" `
-                                      -ArgumentList "/c", $uninstallCmd `
-                                      -Wait `
-                                      -WindowStyle Hidden `
-                                      -ErrorAction Stop
-
-                        Write-Log "$($app.DisplayName) successfully uninstalled."
-                        $Summary.Success++
-                    } catch {
-                        Write-Log "Error running uninstall command:"
-                        Write-Log "  Command       : $uninstallCmd"
-                        Write-Log "  Exception     : $_"
-                        if ($_.Exception.InnerException) {
-                            Write-Log "  InnerException: $($_.Exception.InnerException.Message)"
-                        }
-                        $Summary.Failed++
-                    }
-                } else {
-                    Write-Log "No uninstall command found for $($app.DisplayName)."
-                    $Summary.Failed++
+                $allMatchedApps += [PSCustomObject]@{
+                    App     = $app
+                    RegPath = $regPath
                 }
             }
-        } catch {
+        }
+        catch {
             Write-Log "Error reading registry path $regPath`: $_"
         }
     }
+
+    Write-Log "Total matching entries found: $($allMatchedApps.Count)"
+    Write-Log "===== End of Registry Enumeration ====="
+
+    if ($allMatchedApps.Count -eq 0) {
+        return $false
+    }
+
+    # --- Phase 2: Proceed with uninstallation ---
+    Write-Log "===== Uninstallation Phase ====="
+
+    foreach ($entry in $allMatchedApps) {
+        $app = $entry.App
+        $appFound = $true
+        $Summary.Found++
+        $Summary.NotFound = $false
+
+        Write-Log "Uninstalling $($app.DisplayName) from registry..."
+
+        $uninstallCmd = $null
+        if ($app.QuietUninstallString) {
+            $uninstallCmd = $app.QuietUninstallString
+            Write-Log "Using QuietUninstallString."
+        }
+        elseif ($app.UninstallString) {
+            $uninstallCmd = $app.UninstallString
+            Write-Log "Using UninstallString."
+        }
+
+        if ($uninstallCmd) {
+            #Check if mseiexec.exe has /I and replace it with /X
+            if ($uninstallCmd -match "^MsiExec\.exe\s*/I\s*\{[A-Z0-9-]+\}") {
+                # Replace /I with /X and keep the product code
+                Write-Log "Registry uninstall string has /I changing it to /X"
+                $uninstallCmd = $uninstallCmd.Replace("/I", "/X")
+            }
+            # Check if the uninstall command is using MsiExec and append /qn if it is
+            if ($uninstallCmd -like "MsiExec.exe*") {
+                $uninstallCmd += " /qn /norestart"
+                Write-Log "Modified uninstall command for silent uninstallation: $uninstallCmd"
+            }
+            # For non-MsiExec commands (e.g. EXE bootstrappers), append /norestart to prevent automatic reboots
+            elseif ($uninstallCmd -notmatch '/norestart') {
+                $uninstallCmd += " /norestart"
+                Write-Log "Appended /norestart to prevent automatic reboot: $uninstallCmd"
+            }
+
+            Write-Log "Attempting to run uninstall command as-is: $uninstallCmd"
+
+            try {
+                Start-Process -FilePath "cmd.exe" `
+                    -ArgumentList "/c", $uninstallCmd `
+                    -Wait `
+                    -WindowStyle Hidden `
+                    -ErrorAction Stop
+
+                Write-Log "$($app.DisplayName) successfully uninstalled."
+                $Summary.Success++
+            }
+            catch {
+                Write-Log "Error running uninstall command:"
+                Write-Log "  Command       : $uninstallCmd"
+                Write-Log "  Exception     : $_"
+                if ($_.Exception.InnerException) {
+                    Write-Log "  InnerException: $($_.Exception.InnerException.Message)"
+                }
+                $Summary.Failed++
+            }
+        }
+        else {
+            Write-Log "No uninstall command found for $($app.DisplayName)."
+            $Summary.Failed++
+        }
+    }
+
+    Write-Log "===== End of Uninstallation Phase ====="
 
     return $appFound
 }
@@ -153,13 +204,14 @@ function Uninstall-Application {
 }
 
 # Main Script Execution
-Write-Log "Script Version 1.4"
+Write-Log "Script Version 1.7"
 if (-not $AppName) {
     $AppName = Read-Host "Enter the name of the application to uninstall"
 }
 
 try {
     Uninstall-Application $AppName
-} catch {
+}
+catch {
     Write-Log "Fatal error during uninstall: $_"
 }
