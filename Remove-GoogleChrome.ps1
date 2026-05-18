@@ -54,16 +54,22 @@
 
 .NOTES
     Script Name    : Remove-GoogleChrome.ps1
-    Version        : 1.1.0
+    Version        : 1.2.1
     Author         : Vipin Anand Ashodhiya
     Created        : 06-04-2026
-    Last Modified  : 14-04-2026
+    Last Modified  : 18-05-2026
     PS Version     : 5.1+
     Context        : Runs as SYSTEM (SCCM) or local Administrator
     Log Location   : C:\Windows\fndr\Remove-GoogleChrome_<timestamp>.log
     Exit Codes     : 0 = Full Success | 3010 = Partial Success (Reboot Pending) | 2 = Critical Failure
 
     CHANGELOG:
+    v1.2.1 (18-05-2026)
+      - Fixed ParameterBindingValidationException bug when Write-Log was passed an empty string
+    v1.2.0 (18-05-2026)
+      - Refactored exit code logic based on a Phase Importance Classification matrix
+      - Script returns 3010 (Reboot Pending) only if Tier 2 core cleanup phases fail or have locked files
+      - Non-critical phase failures (e.g. firewall rules) no longer prevent a 0 (Success) exit code
     v1.1.0 (14-04-2026)
       - Phase Reordering: Graceful MSI/EXE Uninstall executed before Service and Task removal
       - Fix PowerShell 5.1 array-unwrapping bug in phase 1 detection preventing correct count display
@@ -105,7 +111,7 @@ param(
 
 # --- Script Identity ---
 $SCRIPT_NAME = "Remove-GoogleChrome"
-$SCRIPT_VERSION = "1.1.0"
+$SCRIPT_VERSION = "1.2.1"
 
 # --- Timestamp ---
 $SCRIPT_TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -306,6 +312,7 @@ function Write-Log {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [Parameter(Mandatory = $false, Position = 1)]
@@ -5993,42 +6000,59 @@ function Invoke-Phase10Validation {
         }
 
         # --- Run all validation checks ---
-        Write-LogSubSection "10.1–10.7 — Running Validation Checks"
+        Write-LogSubSection "10.1-10.7 — Running Validation Checks"
         $script:validationResults = Confirm-ChromeRemoval
 
         # --- Write summary table ---
         $summary = Write-ValidationSummary -ValidationResults $script:validationResults
 
-        # --- Determine exit code ---
-        Write-LogSubSection "10.8 — Determining Exit Code"
+        # --- Determine exit code based on Phase Importance Classification ---
+        Write-LogSubSection "10.8 — Determining Final Exit Code"
+
+        # Tier 2: Important Phases (Failure requires Reboot Pending / 3010)
+        $tier2Phases = @(
+            "Phase 1", "Phase 2", "Phase 4", 
+            "Phase 5", "Phase 6", "Phase 7", "Phase 8"
+        )
+        
+        $hasTier2Issue = $false
+        foreach ($phase in $tier2Phases) {
+            if ($script:phaseResults[$phase] -eq "FAIL" -or $script:phaseResults[$phase] -eq "PARTIAL") {
+                $hasTier2Issue = $true
+                Write-Log "Tier 2 phase issue detected in: $phase" "VERBOSE"
+            }
+        }
 
         if ($DryRun) {
             Write-Log "DryRun mode — exit code set to 0 (no changes were attempted)" "DRYRUN"
             $script:exitCode = 0
             $script:phaseResults["Phase 10"] = "PASS"
         }
-        elseif ($summary.FailCount -eq 0) {
-            Write-Log "All validation checks PASSED — exit code: 0 (Full Success)" "SUCCESS"
-            $script:exitCode = 0
-            $script:phaseResults["Phase 10"] = "PASS"
+        elseif ($script:validationResults["Chrome Binary"] -eq "FAIL") {
+            # Tier 1 Failure: Chrome executable is still present
+            Write-Log "Chrome binary still exists — exit code: 2 (Critical Failure)" "ERROR"
+            $script:exitCode = 2
+            $script:phaseResults["Phase 10"] = "FAIL"
         }
-        elseif ($summary.PassCount -gt 0) {
-            # Check if Chrome binary is still present (critical failure)
-            if ($script:validationResults["Chrome Binary"] -eq "FAIL") {
-                Write-Log "Chrome binary still exists — exit code: 2 (Critical Failure)" "ERROR"
-                $script:exitCode = 2
-                $script:phaseResults["Phase 10"] = "FAIL"
+        elseif ($hasTier2Issue) {
+            Write-Log "Main binary removed, but Tier 2 phases reported failures or locks — exit code: 3010 (Reboot Pending)" "WARNING"
+            $script:exitCode = 3010
+            if ($summary.FailCount -eq 0) {
+                $script:phaseResults["Phase 10"] = "PASS"
             }
             else {
-                Write-Log "Some validation checks failed but Chrome binary is removed — exit code: 3010 (Partial Success / Reboot Pending)" "WARNING"
-                $script:exitCode = 3010
                 $script:phaseResults["Phase 10"] = "PARTIAL"
             }
         }
+        elseif ($summary.FailCount -gt 0) {
+            Write-Log "Main binary removed, but some validation checks failed (e.g. locked user files) — exit code: 3010 (Reboot Pending)" "WARNING"
+            $script:exitCode = 3010
+            $script:phaseResults["Phase 10"] = "PARTIAL"
+        }
         else {
-            Write-Log "All validation checks FAILED — exit code: 2 (Critical Failure)" "ERROR"
-            $script:exitCode = 2
-            $script:phaseResults["Phase 10"] = "FAIL"
+            Write-Log "All critical and important checks PASSED — exit code: 0 (Full Success)" "SUCCESS"
+            $script:exitCode = 0
+            $script:phaseResults["Phase 10"] = "PASS"
         }
 
         return $true
