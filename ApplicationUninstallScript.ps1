@@ -134,7 +134,7 @@ function Uninstall-RegistryApp {
         }
 
         if ($uninstallCmd) {
-            #Check if mseiexec.exe has /I and replace it with /X
+            # Check if the uninstall command is using MsiExec and replace /I with /X if present
             if ($uninstallCmd -match "^MsiExec\.exe\s*/I\s*\{[A-Z0-9-]+\}") {
                 # Replace /I with /X and keep the product code
                 Write-Log "Registry uninstall string has /I changing it to /X"
@@ -142,7 +142,7 @@ function Uninstall-RegistryApp {
             }
             # Check if the uninstall command is using MsiExec and append /qn if it is
             if ($uninstallCmd -like "MsiExec.exe*") {
-                $uninstallCmd += " /qn /norestart"
+                $uninstallCmd += " /qn /norestart /L*V C:\Windows\fndr\logs\$($app.DisplayName)-Uninstall.log"
                 Write-Log "Modified uninstall command for silent uninstallation: $uninstallCmd"
             }
             # For non-MsiExec commands (e.g. EXE bootstrappers), append /norestart to prevent automatic reboots
