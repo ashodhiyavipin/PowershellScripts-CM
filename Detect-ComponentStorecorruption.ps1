@@ -3,7 +3,7 @@
 # Purpose: Runs DISM health checks, parses CBS.log for corruption summary,
 #          writes results to registry for SCCM Configuration Baseline pickup.
 # Author:  Vipin / Global Software Delivery Engineering
-# Version: 2.0
+# Version: 2.1
 # Date:    2026-09-07
 #
 # Changelog from v1.0 (code review fixes):
@@ -64,11 +64,55 @@ $CBSLogPath   = "$env:SystemRoot\Logs\CBS\CBS.log"
 
 #region --- Functions ---
 function Write-Log {
+    <#
+    .SYNOPSIS
+        Writes a timestamped line to the log file and echoes it to the host.
+
+    .NOTES
+        Deliberately does NOT use Write-Output / does NOT return a value.
+        Every caller of this function (Invoke-DISMCommand, Get-CBSLogSummary,
+        etc.) calls Write-Log many times as a bare statement. If Write-Log
+        emitted anything to the success/output stream, each of those calls
+        would silently become part of the CALLING function's own return
+        value - e.g. Invoke-DISMCommand's "return $exitCode" would actually
+        come back as @(logline1, logline2, ..., $exitCode), an array, not an
+        int. That is exactly what caused:
+            "Cannot convert the System.Object[] value ... to type Int32"
+        Write-Host (host stream) and file writes below are both safe: they
+        cannot be accidentally captured by a caller's variable assignment.
+
+        Add-Content is wrapped with a short retry: log viewers like CMTrace
+        can briefly hold the file in a share mode that blocks writers, and
+        that should degrade to "one log line delayed/dropped," never to a
+        wall of repeated terminal errors or a script failure.
+    #>
     param([string]$Message)
+
     $Entry = "[$( Get-Date -Format 'yyyy-MM-dd HH:mm:ss' )] $Message"
-    if (-not (Test-Path $LogFolder)) { New-Item -Path $LogFolder -ItemType Directory -Force | Out-Null }
-    Add-Content -Path $LogFile -Value $Entry -Force
-    Write-Output $Entry
+    Write-Host $Entry
+
+    if (-not (Test-Path $LogFolder)) {
+        try { New-Item -Path $LogFolder -ItemType Directory -Force | Out-Null } catch { }
+    }
+
+    $attempts = 0
+    $maxAttempts = 3
+    while ($attempts -lt $maxAttempts) {
+        try {
+            Add-Content -Path $LogFile -Value $Entry -Force -ErrorAction Stop
+            break
+        }
+        catch {
+            $attempts++
+            if ($attempts -ge $maxAttempts) {
+                # Give up on this line rather than crash the run - e.g. the
+                # file is open exclusively in CMTrace or a similar viewer.
+                # The host output above still shows the message.
+                break
+            }
+            Start-Sleep -Milliseconds 200
+        }
+    }
 }
 
 function Invoke-LogRotation {
@@ -132,17 +176,30 @@ function Get-CBSLogSummary {
         Returns $null if no summary block could be found - callers must
         NOT treat that as "healthy".
     #>
-    Write-Log "Parsing CBS.log at: $CBSLogPath (tailing last $CBSTailLines lines)"
+    param(
+        # Explicit params instead of relying on the parent scope: this
+        # function resolves fine today via PowerShell's scope chain, but an
+        # implicit dependency on script-scoped variables breaks silently
+        # (falls back to $null / full-file reads) the moment this function
+        # is copied into a module or called from another script.
+        [Parameter(Mandatory)]
+        [string]$LogPath,
 
-    if (-not (Test-Path $CBSLogPath)) {
-        Write-Log "ERROR: CBS.log not found at $CBSLogPath"
+        [Parameter(Mandatory)]
+        [int]$TailLines
+    )
+
+    Write-Log "Parsing CBS.log at: $LogPath (tailing last $TailLines lines)"
+
+    if (-not (Test-Path $LogPath)) {
+        Write-Log "ERROR: CBS.log not found at $LogPath"
         return $null
     }
 
     try {
         # Tail instead of -Raw: avoids loading a multi-hundred-MB log into
         # memory, which is common on exactly the machines this runs against.
-        $cbsLines = Get-Content -Path $CBSLogPath -Tail $CBSTailLines -ErrorAction Stop
+        $cbsLines = Get-Content -Path $LogPath -Tail $TailLines -ErrorAction Stop
     }
     catch {
         Write-Log "ERROR: Could not read CBS.log - $($_.Exception.Message)"
@@ -250,7 +307,7 @@ Write-Log "=========================================="
 $checkHealthExit   = Invoke-DISMCommand -ArgumentString "/Online /Cleanup-Image /CheckHealth" -StepName "CheckHealth" -TimeoutMinutes $DismTimeoutMinutes
 $scanHealthExit    = Invoke-DISMCommand -ArgumentString "/Online /Cleanup-Image /ScanHealth" -StepName "ScanHealth" -TimeoutMinutes $DismTimeoutMinutes
 
-$restoreHealthExit = "N/A"
+$restoreHealthExit = -1
 if ($RunRestoreHealth) {
     $restoreHealthExit = Invoke-DISMCommand -ArgumentString "/Online /Cleanup-Image /RestoreHealth" -StepName "RestoreHealth" -TimeoutMinutes $DismTimeoutMinutes
 }
@@ -258,7 +315,7 @@ else {
     Write-Log "RestoreHealth skipped (use -RunRestoreHealth to enable). Detection only."
 }
 
-$cbsResults = Get-CBSLogSummary
+$cbsResults = Get-CBSLogSummary -LogPath $CBSLogPath -TailLines $CBSTailLines
 
 # --- Status determination ---
 # Three real outcomes, not two:
@@ -321,10 +378,16 @@ Write-Log "=========================================="
 #   2 = indeterminate (UNKNOWN) - treat as non-compliant so it surfaces for
 #       manual review rather than silently passing
 #   3 = script-level failure (registry write failed, see log)
+#   4 = internal error - $status held an unrecognized value (should never
+#       happen; indicates a code defect if seen, see log)
 switch ($status) {
     "HEALTHY" { exit 0 }
     "CORRUPT" { exit 1 }
     "UNKNOWN" { exit 2 }
+    default   {
+        Write-Log "ERROR: Unrecognized status value '$status' - exiting non-zero rather than falling through to an implicit 0."
+        exit 4
+    }
 }
 #endregion
 
