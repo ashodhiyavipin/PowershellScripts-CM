@@ -3,7 +3,7 @@
 # Purpose: Runs DISM health checks, parses CBS.log for corruption summary,
 #          writes results to registry for SCCM Configuration Baseline pickup.
 # Author:  Vipin / Global Software Delivery Engineering
-# Version: 2.3
+# Version: 2.4
 # Date:    2026-09-07
 #
 # Changelog from v1.0 (code review fixes):
@@ -404,18 +404,28 @@ Write-Log "Component Store Health Check - END"
 Write-Log "Status: $status"
 Write-Log "=========================================="
 
-# Exit codes for the Configuration Baseline / CI script evaluation:
-#   0 = compliant (HEALTHY)
-#   1 = non-compliant (CORRUPT) - remediation should run
-#   2 = indeterminate (UNKNOWN) - treat as non-compliant so it surfaces for
-#       manual review rather than silently passing
+# Exit codes - this is now a PROCESS EXECUTION signal for SCCM's Program
+# mechanism, not a compliance signal. Legacy Packages/Programs have no
+# Custom Exit Codes UI (that only exists on Application Deployment Types),
+# and execmgr treats any non-zero exit code as FailureNonRetry by default.
+# Since HEALTHY, CORRUPT, and UNKNOWN are all outcomes the script reached
+# correctly - not execution failures - they all exit 0 here so the Program
+# deployment reports Success for every machine that actually ran to
+# completion, regardless of what it found.
+#
+# The HEALTHY/CORRUPT/UNKNOWN distinction is NOT lost - it's tracked where
+# it belongs: the registry (Status value) and, once wired up, the CI
+# discovery script + Configuration Baseline compliance state. Only genuine
+# execution failures stay non-zero here:
+#   0 = script ran to completion (state is HEALTHY, CORRUPT, or UNKNOWN -
+#       see the registry / this log for which one)
 #   3 = script-level failure (registry write failed, see log)
 #   4 = internal error - $status held an unrecognized value (should never
 #       happen; indicates a code defect if seen, see log)
 switch ($status) {
     "HEALTHY" { exit 0 }
-    "CORRUPT" { exit 1 }
-    "UNKNOWN" { exit 2 }
+    "CORRUPT" { exit 0 }
+    "UNKNOWN" { exit 0 }
     default   {
         Write-Log "ERROR: Unrecognized status value '$status' - exiting non-zero rather than falling through to an implicit 0."
         exit 4
