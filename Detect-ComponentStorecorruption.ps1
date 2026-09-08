@@ -3,7 +3,7 @@
 # Purpose: Runs DISM health checks, parses CBS.log for corruption summary,
 #          writes results to registry for SCCM Configuration Baseline pickup.
 # Author:  Vipin / Global Software Delivery Engineering
-# Version: 2.1
+# Version: 2.2
 # Date:    2026-09-07
 #
 # Changelog from v1.0 (code review fixes):
@@ -136,6 +136,18 @@ function Invoke-DISMCommand {
     .SYNOPSIS
         Runs a DISM command with a hard timeout so a hung process can't
         block the baseline evaluation cycle indefinitely.
+
+    .NOTES
+        Touches $process.Handle immediately after Start-Process. This is a
+        documented .NET/PowerShell quirk: if you never access .Handle before
+        the process exits, Windows can invalidate the process handle the
+        instant it terminates, and .ExitCode then comes back empty even
+        though WaitForExit() correctly reported the process as finished.
+        That was silently happening here - $exitCode was blank, and it only
+        avoided throwing downstream because [int]$null casts to 0, which
+        would have recorded every DISM run as "succeeded" regardless of what
+        actually happened. Touching .Handle forces .NET to retain the handle
+        so ExitCode is reliably populated afterward.
     #>
     param(
         [string]$ArgumentString,
@@ -150,6 +162,9 @@ function Invoke-DISMCommand {
                                  -ArgumentList $ArgumentString `
                                  -NoNewWindow -PassThru
 
+        # Force .NET to retain the process handle - see .NOTES above.
+        $null = $process.Handle
+
         $timedOut = -not $process.WaitForExit($TimeoutMinutes * 60 * 1000)
 
         if ($timedOut) {
@@ -159,6 +174,16 @@ function Invoke-DISMCommand {
         }
 
         $exitCode = $process.ExitCode
+
+        if ($null -eq $exitCode -or $exitCode -eq "") {
+            # Belt-and-suspenders: if ExitCode still comes back empty despite
+            # the Handle fix, do NOT let it silently become 0 (success) via
+            # an [int]$null cast later. Surface it as -1 (unknown) instead,
+            # so a real DISM failure can never be recorded as a pass.
+            Write-Log "WARNING: $StepName process exited but ExitCode could not be read - recording as -1 (unknown), not assuming success."
+            return -1
+        }
+
         Write-Log "$StepName completed with exit code: $exitCode"
         return $exitCode
     }
