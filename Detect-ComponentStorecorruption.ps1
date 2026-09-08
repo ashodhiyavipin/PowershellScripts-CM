@@ -51,22 +51,19 @@ function Parse-CBSLogSummary {
         return $null
     }
 
-    # Read CBS.log content
     $cbsContent = Get-Content -Path $CBSLogPath -Raw
 
-    # Find all Summary blocks — we want the LAST one (most recent scan)
     $summaryPattern = '(?s)Info\s+CBS\s+Summary:.*?(?=\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\s+Info\s+CBS\s+Staged Packages:)'
-    $matches = [regex]::Matches($cbsContent, $summaryPattern)
+    $regexMatches = [regex]::Matches($cbsContent, $summaryPattern)
 
-    if ($matches.Count -eq 0) {
+    if ($regexMatches.Count -eq 0) {
         Write-Log "WARNING: No Summary block found in CBS.log"
         return $null
     }
 
-    $lastSummary = $matches[$matches.Count - 1].Value
-    Write-Log "Found Summary block (using last occurrence of $($matches.Count) found)"
+    $lastSummary = $regexMatches[$regexMatches.Count - 1].Value
+    Write-Log "Found Summary block (using last occurrence of $($regexMatches.Count) found)"
 
-    # Parse individual values
     $result = @{
         TotalDetectedCorruption  = Extract-Value $lastSummary 'Total Detected Corruption:\s*(\d+)'
         CBSManifestCorruption    = Extract-Value $lastSummary 'CBS Manifest Corruption:\s*(\d+)'
@@ -106,24 +103,21 @@ function Write-RegistryResults {
         New-Item -Path $RegistryPath -Force | Out-Null
     }
 
-    # Core status
-    Set-ItemProperty -Path $RegistryPath -Name "Status"                    -Value $Status          -Type String -Force
-    Set-ItemProperty -Path $RegistryPath -Name "LastScanDate"              -Value $Timestamp        -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "Status" -Value $Status -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "LastScanDate" -Value $Timestamp -Type String -Force
 
-    # DISM exit codes
-    Set-ItemProperty -Path $RegistryPath -Name "ScanHealthExitCode"        -Value $Results.ScanHealthExitCode        -Type DWord -Force
-    Set-ItemProperty -Path $RegistryPath -Name "CheckHealthExitCode"       -Value $Results.CheckHealthExitCode       -Type DWord -Force
-    Set-ItemProperty -Path $RegistryPath -Name "RestoreHealthExitCode"     -Value $Results.RestoreHealthExitCode     -Type DWord -Force
+    Set-ItemProperty -Path $RegistryPath -Name "ScanHealthExitCode" -Value $Results.ScanHealthExitCode -Type DWord -Force
+    Set-ItemProperty -Path $RegistryPath -Name "CheckHealthExitCode" -Value $Results.CheckHealthExitCode -Type DWord -Force
+    Set-ItemProperty -Path $RegistryPath -Name "RestoreHealthExitCode" -Value $Results.RestoreHealthExitCode -Type DWord -Force
 
-    # CBS parsed values
-    Set-ItemProperty -Path $RegistryPath -Name "TotalDetectedCorruption"   -Value $Results.TotalDetectedCorruption   -Type String -Force
-    Set-ItemProperty -Path $RegistryPath -Name "CSIPayloadCorruption"      -Value $Results.CSIPayloadCorruption      -Type String -Force
-    Set-ItemProperty -Path $RegistryPath -Name "CBSManifestCorruption"     -Value $Results.CBSManifestCorruption     -Type String -Force
-    Set-ItemProperty -Path $RegistryPath -Name "CSIManifestCorruption"     -Value $Results.CSIManifestCorruption     -Type String -Force
-    Set-ItemProperty -Path $RegistryPath -Name "TotalRepairedCorruption"   -Value $Results.TotalRepairedCorruption   -Type String -Force
-    Set-ItemProperty -Path $RegistryPath -Name "OperationResult"           -Value $Results.OperationResult           -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "TotalDetectedCorruption" -Value $Results.TotalDetectedCorruption -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "CSIPayloadCorruption" -Value $Results.CSIPayloadCorruption -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "CBSManifestCorruption" -Value $Results.CBSManifestCorruption -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "CSIManifestCorruption" -Value $Results.CSIManifestCorruption -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "TotalRepairedCorruption" -Value $Results.TotalRepairedCorruption -Type String -Force
+    Set-ItemProperty -Path $RegistryPath -Name "OperationResult" -Value $Results.OperationResult -Type String -Force
 
-    Write-Log "Registry updated — Status: $Status"
+    Write-Log "Registry updated - Status: $Status"
 }
 
 function Send-SCCMStatusMessage {
@@ -132,14 +126,11 @@ function Send-SCCMStatusMessage {
         [int]$CorruptionCount
     )
     try {
-        # SCCM Client COM object for status messages
         $SCCMClient = New-Object -ComObject Microsoft.SMS.Client
         $messageText = "ComponentStoreHealth: $Status | TotalCorruption: $CorruptionCount | Machine: $env:COMPUTERNAME"
 
-        # Use custom message ID range (40001 = CORRUPT, 40002 = HEALTHY)
         if ($Status -eq "CORRUPT") {
             Write-Log "Sending SCCM status message: CORRUPT (ID: 40001)"
-            # Status message will be visible in SCCM Monitoring
         }
         else {
             Write-Log "Sending SCCM status message: HEALTHY (ID: 40002)"
@@ -147,14 +138,14 @@ function Send-SCCMStatusMessage {
         Write-Log "Status message content: $messageText"
     }
     catch {
-        Write-Log "WARNING: Could not send SCCM status message — $($_.Exception.Message)"
+        Write-Log "WARNING: Could not send SCCM status message - $($_.Exception.Message)"
     }
 }
 #endregion
 
 #region --- Main Execution ---
 Write-Log "=========================================="
-Write-Log "Component Store Health Check — START"
+Write-Log "Component Store Health Check - START"
 Write-Log "Computer: $env:COMPUTERNAME"
 Write-Log "=========================================="
 
@@ -164,7 +155,7 @@ $checkHealthExit = Run-DISMCommand "/Online /Cleanup-Image /CheckHealth" "CheckH
 # Step 2: Run ScanHealth (full deep scan)
 $scanHealthExit = Run-DISMCommand "/Online /Cleanup-Image /ScanHealth" "ScanHealth"
 
-# Step 3: Run RestoreHealth (expected to fail — confirms CDN block)
+# Step 3: Run RestoreHealth (expected to fail - confirms CDN block)
 $restoreHealthExit = Run-DISMCommand "/Online /Cleanup-Image /RestoreHealth" "RestoreHealth"
 
 # Step 4: Parse CBS.log Summary
@@ -178,16 +169,15 @@ if ($cbsResults -and $cbsResults.TotalDetectedCorruption -ne "N/A") {
 
 if ($totalCorruption -gt 0) {
     $status = "CORRUPT"
-    Write-Log "*** CORRUPTION DETECTED — Total: $totalCorruption ***"
+    Write-Log "*** CORRUPTION DETECTED - Total: $totalCorruption ***"
 }
 elseif ($scanHealthExit -ne 0) {
-    # Fallback: if CBS parsing failed but ScanHealth returned non-zero
     $status = "CORRUPT"
-    Write-Log "*** CORRUPTION DETECTED (via exit code) — ScanHealth exit: $scanHealthExit ***"
+    Write-Log "*** CORRUPTION DETECTED (via exit code) - ScanHealth exit: $scanHealthExit ***"
 }
 else {
     $status = "HEALTHY"
-    Write-Log "Machine is HEALTHY — no corruption detected."
+    Write-Log "Machine is HEALTHY - no corruption detected."
 }
 
 # Step 6: Build results hashtable
@@ -210,11 +200,11 @@ Write-RegistryResults -Results $allResults -Status $status
 Send-SCCMStatusMessage -Status $status -CorruptionCount $totalCorruption
 
 Write-Log "=========================================="
-Write-Log "Component Store Health Check — END"
+Write-Log "Component Store Health Check - END"
 Write-Log "Status: $status"
 Write-Log "=========================================="
 
-# Exit with code for CI/CB evaluation
+# Exit code for CI/CB evaluation
 # Exit 0 = compliant (HEALTHY), Exit 1 = non-compliant (CORRUPT)
 if ($status -eq "CORRUPT") {
     exit 1
