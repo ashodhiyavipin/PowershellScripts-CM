@@ -3,7 +3,7 @@
 # Purpose: Runs DISM health checks, parses CBS.log for corruption summary,
 #          writes results to registry for SCCM Configuration Baseline pickup.
 # Author:  Vipin / Global Software Delivery Engineering
-# Version: 2.2
+# Version: 2.3
 # Date:    2026-09-07
 #
 # Changelog from v1.0 (code review fixes):
@@ -175,11 +175,18 @@ function Invoke-DISMCommand {
 
         $exitCode = $process.ExitCode
 
-        if ($null -eq $exitCode -or $exitCode -eq "") {
-            # Belt-and-suspenders: if ExitCode still comes back empty despite
-            # the Handle fix, do NOT let it silently become 0 (success) via
-            # an [int]$null cast later. Surface it as -1 (unknown) instead,
-            # so a real DISM failure can never be recorded as a pass.
+        if ($null -eq $exitCode) {
+            # Belt-and-suspenders: if ExitCode still comes back genuinely
+            # unset despite the Handle fix above, do NOT let it silently
+            # become 0 (success) via an [int]$null cast later. Surface it as
+            # -1 (unknown) instead, so a real DISM failure can never be
+            # recorded as a pass.
+            #
+            # NOTE: deliberately checking only for $null here, not also
+            # -eq "". [int]0 -eq "" evaluates to True in PowerShell, because
+            # -eq coerces "" to the left operand's type (int), and [int]""
+            # is 0. That coercion bug was silently discarding a genuine,
+            # healthy ExitCode of 0 and replacing it with -1 on every run.
             Write-Log "WARNING: $StepName process exited but ExitCode could not be read - recording as -1 (unknown), not assuming success."
             return -1
         }
